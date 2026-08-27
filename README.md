@@ -94,8 +94,7 @@ Likewise, the Guardian service should not care whether its window command reache
 - a simulated RestBus,
 - an OpenBSW ECU,
 - a ThreadX controller,
-- the Window Motor + CLA setup,
-- or an actual vehicle actuator.
+- or the Window Motor + Flux Capacitor setup.
 
 Your service should communicate through stable service interfaces.
 
@@ -125,7 +124,7 @@ flowchart LR
     subgraph ECU["Zonal / Embedded Controller"]
         CDA["OpenSOVD CDA"]
         ECU_SIM["OpenBSW / RestBus Simulation"]
-        ECU_HW["Window Motor Controller<br/>or Window Motor + CLA"]
+        ECU_HW["Window Motor Controller<br/>or Window Motor + Flux Capacitor"]
     end
 
     CPS -->|"uProtocol Publish"| GL
@@ -546,9 +545,9 @@ It is the first stage of the portability journey.
 
 ---
 
-# 10. Window Motor + CLA
+# 10. Window Motor + Flux Capacitor
 
-A second actuator target in the hackathon setup is the **Window Motor with CLA**.
+A second actuator target in the hackathon setup is the **Window Motor with Flux Capacitor**.
 
 Treat this as the hardware-specific target supplied on site.
 
@@ -570,7 +569,7 @@ Simulated Window
 to:
 
 ```text
-Window Motor + CLA
+Window Motor + Flux Capacitor
 ```
 
 Any hardware-specific mapping belongs in the controller, CDA configuration, or adapter.
@@ -870,7 +869,7 @@ OpenBSW physical target
 or:
 
 ```text
-Window Motor + CLA
+Window Motor + Flux Capacitor
 ```
 
 Again, the Guardian Loop should remain unchanged.
@@ -1084,7 +1083,7 @@ Examples:
 
 - AZ3166 + ThreadX temperature sensor,
 - OpenBSW embedded controller,
-- Window Motor + CLA,
+- Window Motor + Flux Capacitor,
 - AutoSD HPC.
 
 Requirements:
@@ -1113,27 +1112,6 @@ HIL
 without rebuilding or modifying Guardian.
 
 **Goal:** demonstrate a software-defined test bench.
-
----
-
-## Level 5 — Flux Capacitor
-
-Add something unexpected.
-
-Ideas:
-
-- drive the on-site Flux Capacitor,
-- update the Time Circuits display,
-- visualize Guardian status,
-- add an eCall simulation,
-- add a mobile warning,
-- visualize the openDuT topology,
-- implement actuator fallback,
-- add fault injection,
-- use two temperature sensors,
-- implement a more detailed NCAP-inspired warning state machine.
-
-Make it memorable.
 
 ---
 
