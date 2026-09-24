@@ -23,7 +23,47 @@ The reference application is called the **Guardian Loop**.
 
 ---
 
-# Your Mission
+## Start here
+
+This repository is both the **challenge brief** and a **working reference
+implementation** of its first stages. Read in this order:
+
+| step | document | time | what you get |
+|---|---|---|---|
+| 1 | this README | 30 min | the mission, the architecture, the rules, the levels |
+| 2 | [Tutorial.md](Tutorial.md) | 20 min hands-on | run the reference stack, watch the Guardian escalate, poke every service |
+| 3 | [Guardian-loop.md](Guardian-loop.md) | as needed | *"which existing project do I copy from?"* — building-block catalog |
+| 4 | [ros2-hvac/README.md](ros2-hvac/README.md) | 30 min | the team template: a ROS 2 workload deployed by Eclipse Muto, observed with ros2_medkit, bridged to CAN |
+| 5 | [ros2-hvac/CAN_INTEGRATION.md](ros2-hvac/CAN_INTEGRATION.md) | as needed | CAN frames, DBC, tools, path to real hardware |
+
+Unfamiliar acronyms are explained in the [Glossary](#glossary) at the end.
+
+## What is already implemented
+
+Everything below runs with one `docker compose up` (see the Tutorial). It
+covers challenge Levels 1 and 2 and parts of Level 3, so your team starts
+from a working loop and replaces pieces rather than building from zero.
+
+| building block (see below) | reference code | status |
+|---|---|---|
+| 1. Guardian Loop | `services/src/bin/guardian.rs` | state machine CLEAR → MONITORING → WARNING → CRITICAL → MITIGATING; staged mitigation (HVAC first, then window + alarm) |
+| 2. Child Presence Sensor | `services/src/bin/child_presence_sim.rs` | scripted simulator: absent, then present |
+| 3. Temperature Sensor | `services/src/bin/temperature_sim.rs` | scripted 26 → 36 → 43 °C, then a closed-loop thermal model reacting to window and HVAC |
+| 4. ThreadX temperature sensor | `threadx-temp-sensor/`, `someip_uprot_bridge.rs` | Linux port of the ThreadX sensor emitting SOME/IP, bridged to uProtocol (`threadx` profile) |
+| 6. Actuation Adapter | `services/src/bin/actuation_adapter.rs` | uProtocol RPC server turning a mitigation request into diag commands |
+| 7. CDA | `services/src/bin/cda_sim.rs` | **simulated**: forwards diag commands as UDS-style commands (replace with OpenSOVD) |
+| 8./9. Window ECU | `services/src/bin/window_controller_sim.rs` | **simulated** window actuator with `/state` API (replace with OpenBSW / RestBus) |
+| HVAC controller (extra) | `ros2-hvac/` | ROS 2 node deployed by **Eclipse Muto**, diagnostics via **ros2_medkit**, CAN bridge, uProtocol bridge; the template teams should copy |
+| Observation | `services/src/bin/dashboard.rs` | one-page live view of the whole loop on port 8094 |
+| Transport | `zenohd` compose service | **Eclipse Zenoh** router carrying all uProtocol traffic |
+
+Not implemented, and therefore yours to build: OpenSOVD CDA, OpenBSW ECU,
+RestBus, AutoSD deployment, openDuT topology switching, eCall mock, the
+physical window motor.
+
+---
+
+## Your Mission
 
 Build a portable **Child Presence Detection and Mitigation** feature.
 
@@ -52,7 +92,7 @@ Only configuration, deployment, transport bindings, or topology should have to c
 
 ---
 
-# Why Child Presence Detection?
+## Why Child Presence Detection?
 
 A child unintentionally left inside a parked vehicle can be exposed to dangerous cabin temperatures.
 
@@ -76,9 +116,9 @@ That makes it an ideal Software-Defined Vehicle challenge.
 
 ---
 
-# The Golden Rule
+## The Golden Rule
 
-## Keep the Guardian Logic portable
+### Keep the Guardian Logic portable
 
 Your Guardian business logic should not care whether a temperature value comes from:
 
@@ -103,7 +143,7 @@ Your service should communicate through stable service interfaces.
 
 ---
 
-# Target Architecture
+## Target Architecture
 
 The architecture can be understood as three domains.
 
@@ -148,56 +188,17 @@ A service that starts on your laptop may later run inside the AutoSD HPC. A simu
 
 ---
 
-# Development Workflow
-
-## Windows + WSL + Docker Compose
-
-If you are developing on Windows with WSL and the ROS 2 environment is running inside the Docker Compose containers, use this workflow:
-
-1. Start the stack from WSL:
-
-```bash
-docker compose --profile ros2 up --build
-```
-
-2. Use the published HTTP ports from Windows or WSL:
-
-- `http://localhost:18080` for the `ros2_medkit` REST API
-- `http://localhost:18081` for the HVAC fault UI
-- `http://localhost:3000` for the official `ros2_medkit_web_ui`
-- `http://localhost:8094` for the Guardian observation dashboard
-
-3. Observe ROS 2 topics with `rqt` by entering the running `ros2-hvac` container:
-
-```bash
-docker compose --profile ros2 exec ros2-hvac bash
-source /opt/ros/$ROS_DISTRO/setup.bash
-source /opt/muto_ws/install/setup.bash
-source /opt/hvac_ws/install/setup.bash
-rqt
-```
-
-Notes:
-
-- On Windows 11 with WSLg, `rqt` should open directly as a Linux GUI application.
-- Without WSLg, use an X server on Windows and a working `DISPLAY` configuration in WSL.
-- `rqt` inspects ROS 2 topics from inside the ROS environment; it does not use the `ros2_medkit` HTTP API.
-- The dashboard on `8094` is the easiest way to observe the full simulated setup without requiring a ROS GUI.
-- The official `ros2_medkit_web_ui` on `3000` should be connected to gateway URL `http://localhost:18080` with base endpoint `api/v1`.
-
----
-
-# Communication Philosophy
+## Communication Philosophy
 
 The challenge uses two complementary concepts.
 
-## uProtocol — keep services independent
+### uProtocol — keep services independent
 
 Use uProtocol for communication between application-level services.
 
 Typical patterns are:
 
-### Publish / Subscribe
+#### Publish / Subscribe
 
 Use events for continuously changing vehicle information.
 
@@ -213,7 +214,7 @@ A producer publishes the event without knowing who consumes it.
 
 The Guardian Loop subscribes to the information it needs.
 
-### RPC
+#### RPC
 
 Use RPC when one service asks another service to perform an operation.
 
@@ -230,7 +231,7 @@ It should not contain the implementation of that action.
 
 ---
 
-# openDuT — change the vehicle underneath your application
+## openDuT — change the vehicle underneath your application
 
 Eclipse openDuT represents the test environment.
 
@@ -284,9 +285,9 @@ Do not hard-code physical device IP addresses into the Guardian business logic.
 
 ---
 
-# Building Blocks
+## Building Blocks
 
-## 1. Guardian Loop — Child Hazard Decision Service
+### 1. Guardian Loop — Child Hazard Decision Service
 
 **This is the heart of the challenge.**
 
@@ -326,7 +327,7 @@ Those responsibilities belong to adapters and services.
 
 ---
 
-# 2. Child Presence Sensor
+### 2. Child Presence Sensor
 
 The Child Presence Sensor tells the system whether a child has been detected inside the vehicle.
 
@@ -357,7 +358,7 @@ For the challenge, **a simulated sensor is completely acceptable for the first m
 
 ---
 
-# 3. Temperature Sensor
+### 3. Temperature Sensor
 
 The cabin temperature is the second main input to the Guardian Loop.
 
@@ -391,7 +392,7 @@ The important part is the end-to-end SDV architecture.
 
 ---
 
-# 4. AZ3166 + Eclipse ThreadX Temperature Sensor
+### 4. AZ3166 + Eclipse ThreadX Temperature Sensor
 
 The physical sensor path replaces the software temperature simulator.
 
@@ -421,7 +422,7 @@ When you switch from the virtual sensor to the AZ3166, the Guardian service inte
 
 ---
 
-# 5. AutoSD HPC
+### 5. AutoSD HPC
 
 The main Guardian Loop service should ultimately run in the provided HPC environment based on **AutoSD**.
 
@@ -444,7 +445,7 @@ The important demonstration is that the **same application artifact** can later 
 
 ---
 
-# 6. CDA REST Service / Actuation Adapter
+### 6. CDA REST Service / Actuation Adapter
 
 The Guardian Loop should not call UDS directly.
 
@@ -496,7 +497,7 @@ The Guardian Loop should not.
 
 ---
 
-# 7. OpenSOVD Classic Diagnostic Adapter
+### 7. OpenSOVD Classic Diagnostic Adapter
 
 The Classic Diagnostic Adapter, or **CDA**, provides the bridge between service-oriented diagnostics and a traditional ECU.
 
@@ -534,7 +535,7 @@ Your challenge is to connect that pattern to the Guardian Loop.
 
 ---
 
-# 8. OpenBSW Window Controller
+### 8. OpenBSW Window Controller
 
 One possible southbound target is an OpenBSW-based ECU.
 
@@ -559,7 +560,7 @@ Focus on the Guardian Loop scenario.
 
 ---
 
-# 9. RestBus Simulation
+### 9. RestBus Simulation
 
 The **RestBus Sim** represents the vehicle hardware that is not physically present.
 
@@ -585,7 +586,7 @@ It is the first stage of the portability journey.
 
 ---
 
-# 10. Window Motor + CLA
+### 10. Window Motor + CLA
 
 A second actuator target in the hackathon setup is the **Window Motor with CLA**.
 
@@ -616,7 +617,7 @@ Any hardware-specific mapping belongs in the controller, CDA configuration, or a
 
 ---
 
-# 11. eCall / Notification Service
+### 11. eCall / Notification Service
 
 The eCall block is an optional escalation service.
 
@@ -650,13 +651,13 @@ You can also use the service to demonstrate another uProtocol RPC or event flow.
 
 ---
 
-# Suggested Service Contract
+## Suggested Service Contract
 
 To make the feature portable, agree on the service boundary before implementing the hardware.
 
 A simple contract could look like this.
 
-## Sensor Events
+### Sensor Events
 
 ```text
 ChildPresenceEvent
@@ -673,7 +674,7 @@ CabinTemperatureEvent
     sensor_status: enum
 ```
 
-## Guardian Output
+### Guardian Output
 
 ```text
 GuardianStateEvent
@@ -689,7 +690,7 @@ GuardianStateEvent
     temperature_rate: optional float
 ```
 
-## Actuator RPC
+### Actuator RPC
 
 ```text
 SetWindowPosition
@@ -714,7 +715,7 @@ Map them to the uProtocol service definition and generated bindings provided or 
 
 ---
 
-# Suggested Guardian State Machine
+## Suggested Guardian State Machine
 
 A simple Guardian implementation can start with five states.
 
@@ -770,7 +771,7 @@ More advanced implementations can include:
 
 ---
 
-# Development Journey
+## Development Journey
 
 The challenge is intentionally incremental.
 
@@ -778,7 +779,7 @@ Do not begin by connecting every physical component.
 
 ---
 
-## Stage 1 — Guardian Loop on your laptop
+### Stage 1 — Guardian Loop on your laptop
 
 Build:
 
@@ -807,7 +808,7 @@ Child: true  | Temperature: 43°C → CRITICAL
 
 ---
 
-## Stage 2 — Add simulated actuation
+### Stage 2 — Add simulated actuation
 
 Add:
 
@@ -849,7 +850,7 @@ You now have an end-to-end SIL solution.
 
 ---
 
-## Stage 3 — Run the Guardian service on AutoSD
+### Stage 3 — Run the Guardian service on AutoSD
 
 Move the Guardian service onto the AutoSD HPC environment.
 
@@ -866,7 +867,7 @@ Only deployment and runtime configuration should change.
 
 ---
 
-## Stage 4 — Replace the temperature simulator
+### Stage 4 — Replace the temperature simulator
 
 Replace:
 
@@ -890,7 +891,7 @@ Demonstrate that the Guardian service cannot tell which sensor implementation is
 
 ---
 
-## Stage 5 — Replace the simulated actuator
+### Stage 5 — Replace the simulated actuator
 
 Use openDuT to switch the actuator side.
 
@@ -916,7 +917,7 @@ Again, the Guardian Loop should remain unchanged.
 
 ---
 
-# The openDuT Moment 🚀
+## The openDuT Moment 🚀
 
 This is the core demonstration of the challenge.
 
@@ -965,7 +966,7 @@ If possible, make the topology change through openDuT rather than manually unplu
 
 ---
 
-# End-to-End Message Flow
+## End-to-End Message Flow
 
 A complete critical-temperature scenario may look like this:
 
@@ -1004,7 +1005,7 @@ sequenceDiagram
 
 ---
 
-# NCAP-Inspired Bonus Behaviour
+## NCAP-Inspired Bonus Behaviour
 
 Teams that want to move closer to the reference safety scenario can add a more detailed warning sequence.
 
@@ -1038,7 +1039,7 @@ Teams interested in the current Euro NCAP behavior should consult the latest Chi
 
 ---
 
-# Failure Handling
+## Failure Handling
 
 A good vehicle feature also works when something is broken.
 
@@ -1080,9 +1081,9 @@ Possible improvements include:
 
 ---
 
-# Suggested Challenge Levels
+## Suggested Challenge Levels
 
-## Level 1 — Great Scott!
+### Level 1 — Great Scott!
 
 Build the Guardian Loop using only software simulation.
 
@@ -1098,7 +1099,7 @@ Requirements:
 
 ---
 
-## Level 2 — 1.21 Gigawatts
+### Level 2 — 1.21 Gigawatts
 
 Connect the Guardian Loop to an actuator.
 
@@ -1115,7 +1116,7 @@ Requirements:
 
 ---
 
-## Level 3 — Roads? Where We're Going…
+### Level 3 — Roads? Where We're Going…
 
 Move part of the system onto hardware.
 
@@ -1135,7 +1136,7 @@ Requirements:
 
 ---
 
-## Level 4 — Time Traveller
+### Level 4 — Time Traveller
 
 Use openDuT to switch between two configurations.
 
@@ -1155,7 +1156,7 @@ without rebuilding or modifying Guardian.
 
 ---
 
-## Level 5 — Flux Capacitor
+### Level 5 — Flux Capacitor
 
 Add something unexpected.
 
@@ -1176,7 +1177,7 @@ Make it memorable.
 
 ---
 
-# Recommended Demo
+## Recommended Demo
 
 A strong final demonstration can be completed in a few minutes.
 
@@ -1245,7 +1246,7 @@ That is the point of the challenge.
 
 ---
 
-# Definition of Done
+## Definition of Done
 
 A successful solution should demonstrate:
 
@@ -1278,7 +1279,7 @@ Bonus:
 
 ---
 
-# What Not to Do
+## What Not to Do
 
 Avoid spending the whole hackathon on infrastructure that already exists.
 
@@ -1297,7 +1298,7 @@ Spend your time connecting them and demonstrating portability.
 
 ---
 
-# Safety
+## Safety
 
 This is a prototype and hackathon environment.
 
@@ -1316,23 +1317,18 @@ The eCall example must use a mock endpoint only and must not contact real emerge
 
 ---
 
-# Useful Starting Points
+## Useful Starting Points
 
 The following existing work is especially useful for this challenge.
+The most useful of all is this repository's own reference implementation
+(see [What is already implemented](#what-is-already-implemented)); the
+full catalog of external building blocks is [Guardian-loop.md](Guardian-loop.md).
 
 ### OpenBSW SOVD Demo
 
-Repository:
+Repository: [Eclipse-SDV-HackFest-Esslingen-2026/OpenBSW-Playground](https://github.com/Eclipse-SDV-HackFest-Esslingen-2026/OpenBSW-Playground)
 
-```text
-Eclipse-SDV-HackFest-Esslingen-2026/OpenBSW-Playground
-```
-
-Look at:
-
-```text
-OpenBSW-SOVD-Demo/
-```
+Look at: [`OpenBSW-SOVD-Demo/`](https://github.com/Eclipse-SDV-HackFest-Esslingen-2026/OpenBSW-Playground/tree/main/OpenBSW-SOVD-Demo)
 
 It contains a working example of:
 
@@ -1352,11 +1348,7 @@ Use this for the actuator side of the Guardian Loop.
 
 ### Commercial SDV Stack
 
-Repository:
-
-```text
-eclipse-sdv-blueprints/commercial-sdv-stack
-```
+Repository: [eclipse-sdv-blueprints/commercial-sdv-stack](https://github.com/eclipse-sdv-blueprints/commercial-sdv-stack)
 
 This is particularly useful as a uProtocol and CDA integration example.
 
@@ -1380,11 +1372,7 @@ The Guardian actuator flow can follow the same pattern.
 
 ### Eclipse uProtocol
 
-Start with:
-
-```text
-eclipse-uprotocol/up-spec
-```
+Start with: [eclipse-uprotocol/up-spec](https://github.com/eclipse-uprotocol/up-spec), and the Rust binding used in this repository, [eclipse-uprotocol/up-rust](https://github.com/eclipse-uprotocol/up-rust)
 
 Focus on:
 
@@ -1400,11 +1388,7 @@ Use your preferred supported language binding, particularly Rust or C++.
 
 ### Eclipse openDuT
 
-Repository:
-
-```text
-eclipse-opendut/opendut
-```
+Repository: [eclipse-opendut/opendut](https://github.com/eclipse-opendut/opendut)
 
 Use openDuT to model the participating devices and to move the setup from virtual devices toward the physical hackathon test bench.
 
@@ -1416,7 +1400,7 @@ Use the AutoSD image and environment supplied for the hackathon as the deploymen
 
 ---
 
-# Suggested Team Split
+## Suggested Team Split
 
 For a team of four, a productive split is:
 
@@ -1442,7 +1426,7 @@ Do not wait until the final hour to connect the components.
 
 ---
 
-# Prerequisites
+## Prerequisites
 
 You should be comfortable with some of the following:
 
@@ -1465,7 +1449,42 @@ The supplied building blocks are intended to let you learn those concepts during
 
 ---
 
-# The Question to Answer
+## Glossary
+
+| term | meaning in this challenge |
+|---|---|
+| **SDV** | Software-Defined Vehicle: vehicle functions delivered as software that can be deployed, updated and moved independently of the hardware. |
+| **HPC** | High-Performance Computer: the vehicle's central Linux compute unit (here AutoSD). Runs the Guardian Loop. |
+| **ECU** | Electronic Control Unit: an embedded controller (window motor, HVAC, …). Often a microcontroller without Linux. |
+| **Zonal controller** | An ECU that aggregates sensors/actuators of one physical zone of the car. |
+| **SIL / HIL** | Software-/Hardware-in-the-Loop: the system under test runs against simulated vs. real hardware. |
+| **uProtocol** | Eclipse uProtocol: transport-independent service communication (publish/subscribe and RPC) with typed URIs. The application-level contract of this challenge. |
+| **Zenoh** | Eclipse Zenoh: the pub/sub/query transport under uProtocol in the reference stack; `zenohd` is its router. |
+| **VSS** | COVESA Vehicle Signal Specification: standard tree of signal names such as `Vehicle.Cabin.HVAC.IsAirConditioningActive`, used in topic URIs. |
+| **SOME/IP** | Scalable service-Oriented MiddlewarE over IP: automotive Ethernet middleware; used by the ThreadX sensor path. |
+| **CAN / DBC** | Controller Area Network: the classic in-vehicle bus (11-bit IDs, 8-byte frames). A DBC file documents which bits of which frame mean what. |
+| **SocketCAN / vcan** | Linux kernel CAN interface and its virtual variant for testing. Linux only. |
+| **UDS** | Unified Diagnostic Services (ISO 14229): request/response protocol to read/write ECU data (DIDs) and run routines. |
+| **DoIP** | Diagnostics over IP: carries UDS over Ethernet. |
+| **SOVD / CDA** | Service-Oriented Vehicle Diagnostics (REST) and the Classic Diagnostic Adapter that maps SOVD calls to UDS/DoIP. OpenSOVD is the Eclipse implementation. |
+| **DID / DTC** | Data Identifier (a readable/writable ECU value) / Diagnostic Trouble Code (a stored fault). |
+| **OpenBSW** | Eclipse OpenBSW: open basic software for embedded ECUs (POSIX and FreeRTOS). |
+| **RestBus simulation** | Simulating the bus traffic of all ECUs that are *not* physically present, so one real ECU can be tested. |
+| **CLA** | The window motor test rig supplied on site (motor plus controller). |
+| **AutoSD** | Automotive Stream Distribution: Red Hat's automotive Linux, the HPC platform here. |
+| **openDuT** | Eclipse openDuT: orchestrates test benches; lets you switch a device under test between virtual and physical without touching the application. |
+| **ThreadX** | Eclipse ThreadX: real-time OS for microcontrollers (the AZ3166 sensor board). |
+| **Muto** | Eclipse Muto: ROS 2 orchestration; deploys "stacks" of ROS 2 nodes from a manifest, as used in `ros2-hvac`. |
+| **ROS 2 / DDS** | Robot Operating System 2, the middleware of the HVAC workload; DDS is its default discovery/transport layer. |
+| **ros2_medkit** | REST gateway over ROS 2 (nodes, parameters, diagnostics → faults), used to observe the HVAC workload. |
+| **Stack (Muto)** | A manifest describing a deployable set of ROS 2 nodes: where to fetch it, its checksum, how to launch it. |
+| **NCAP** | Euro NCAP: European car safety rating programme; its Child Presence Detection protocol inspires the scenario. |
+| **eCall** | In-vehicle emergency call. In this challenge always a mock. |
+| **OTA** | Over-the-air software update. |
+
+---
+
+## The Question to Answer
 
 At the end of the hackathon, your demo should answer one question:
 

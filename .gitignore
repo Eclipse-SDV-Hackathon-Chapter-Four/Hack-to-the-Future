@@ -1,4 +1,31 @@
+# ── Rust ─────────────────────────────────────────────────────────────────────
 target/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ── ROS 2 / colcon workspaces (built inside containers, never committed) ─────
+ros2-hvac/ros2_ws/build/
+ros2-hvac/ros2_ws/install/
+ros2-hvac/ros2_ws/log/
+
+# ── ros2-hvac stack packaging ────────────────────────────────────────────────
+# Intermediate copy made by ros2-hvac/build-hvac-artifact.sh; the tarball in
+# ros2-hvac/artifacts/ is regenerated from it and stays tracked because the
+# artifact-server compose service serves it at runtime.
+ros2-hvac/.artifact-stage/
+
+# ── ThreadX / CMake / Renode build outputs ───────────────────────────────────
+threadx-temp-sensor/build*/
+threadx-temp-sensor/out/
+*.elf
+*.map
+*.o
+
+# ── Local environment ────────────────────────────────────────────────────────
 .env
 *.log
 .vagrant/
+.vscode/

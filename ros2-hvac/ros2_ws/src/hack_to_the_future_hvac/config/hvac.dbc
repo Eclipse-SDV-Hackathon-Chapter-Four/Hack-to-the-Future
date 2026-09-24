@@ -1,0 +1,22 @@
+VERSION "1.0"
+
+NS_ :
+
+BS_:
+
+BU_: HVAC_SIM HOST
+
+BO_ 800 HVAC_STATE: 3 HVAC_SIM
+ SG_ target_temperature_celsius : 0|8@1+ (1,0) [16|30] "degC" HOST
+ SG_ fan_speed_percent : 8|8@1+ (1,0) [0|100] "%" HOST
+ SG_ air_conditioning_active : 16|1@1+ (1,0) [0|1] "" HOST
+ SG_ fault_active : 17|1@1+ (1,0) [0|1] "" HOST
+
+BO_ 801 HVAC_COMMAND: 3 HOST
+ SG_ target_temperature_celsius : 0|8@1+ (1,0) [16|30] "degC" HVAC_SIM
+ SG_ fan_speed_percent : 8|8@1+ (1,0) [0|100] "%" HVAC_SIM
+ SG_ air_conditioning_active : 16|1@1+ (1,0) [0|1] "" HVAC_SIM
+ SG_ fault_active : 17|1@1+ (1,0) [0|1] "" HVAC_SIM
+
+CM_ BO_ 800 "HVAC state published by the ROS 2 HVAC simulator (default CAN ID 0x320).";
+CM_ BO_ 801 "HVAC command consumed by the ROS 2 HVAC simulator (default CAN ID 0x321).";

@@ -1,5 +1,12 @@
 # Guardian Loop — SDV Building Blocks
 
+> **Who this is for:** you have read the mission in [README.md](README.md) and
+> run the reference stack with [Tutorial.md](Tutorial.md). Now you are asking
+> *"which existing project do I copy from to build part X?"* This document is
+> that map. Skim the two tables first ([overview](#-building-block-overview)
+> and [I want to…](#-i-want-to-quick-guide)), then read only the numbered
+> sections you need.
+
 The **Guardian Loop** should not be implemented from scratch.
 
 A large part of the functionality needed for this challenge already exists as examples in the Eclipse SDV ecosystem.
@@ -15,6 +22,20 @@ The Guardian business logic should remain unchanged when simulated endpoints are
 ---
 
 # 🧱 Building Block Overview
+
+Start with what is already in **this repository**; it is the closest match
+to the challenge and runs with one `docker compose up`:
+
+| What you need | In this repository | What to reuse |
+|---|---|---|
+| Guardian state machine + uProtocol pub/sub + RPC client (Rust) | [`services/src/bin/guardian.rs`](services/src/bin/guardian.rs), shared types and URIs in [`services/src/lib.rs`](services/src/lib.rs) | Working Stage 1–2 Guardian: thresholds, staged mitigation (HVAC first, then window), `/state` HTTP endpoint |
+| Simulated sensors publishing VSS events | [`child_presence_sim.rs`](services/src/bin/child_presence_sim.rs), [`temperature_sim.rs`](services/src/bin/temperature_sim.rs) | Minimal publisher pattern with retry; a scripted, closed-loop thermal model |
+| Actuation Adapter → CDA → ECU chain (simulated) | [`actuation_adapter.rs`](services/src/bin/actuation_adapter.rs), [`cda_sim.rs`](services/src/bin/cda_sim.rs), [`window_controller_sim.rs`](services/src/bin/window_controller_sim.rs) | uProtocol RPC server, diag/UDS command topics, simulated window ECU with `/state` endpoint |
+| Deploying a ROS 2 workload with Eclipse Muto, observing it with ros2_medkit, bridging it to CAN | [`ros2-hvac/`](ros2-hvac/README.md) | Complete template: stack manifest, artifact build, launch args, DBC codec, unit + e2e tests |
+| ThreadX sensor + SOME/IP → uProtocol | [`threadx-temp-sensor/`](threadx-temp-sensor/), [`someip_uprot_bridge.rs`](services/src/bin/someip_uprot_bridge.rs) | Stage 4 path: embedded sensor emitting SOME/IP, bridged into the same VSS topic as the simulator |
+| Live observation | [`dashboard.rs`](services/src/bin/dashboard.rs) | One page showing every event in the loop; copy its fetch/poll pattern for your own UI |
+
+Then reach for the wider Eclipse SDV ecosystem:
 
 | What you need | Example / Building Block | What to reuse |
 |---|---|---|
@@ -64,7 +85,7 @@ The Guardian Loop itself should stay relatively small.
              │                  │                  │
              │                  │                  ▼
              │                  │            Window / Fan / Horn
-````
+```
 
 The Guardian Loop should know about concepts such as:
 
@@ -877,51 +898,12 @@ uProtocol should keep the service interfaces stable.
 
 ---
 
-# 📂 Recommended Reference Structure
+# 📂 Where to look in the ecosystem
 
-Participants should not have to search the entire SDV ecosystem.
-
-The challenge repository can provide a simple reference map:
-
-```text
-references/
-│
-├── 01-uprotocol-rpc/
-│   └── service-to-signal/
-│       horn-client/
-│
-├── 02-uprotocol-service/
-│   └── service-to-signal/
-│       horn-service-kuksa/
-│
-├── 03-embedded-actuator/
-│   └── service-to-signal/
-│       actuator-provider/
-│
-├── 04-threadx-temperature/
-│   └── challenge-threadx-playRemote/
-│       MXChip/AZ3166/
-│
-├── 05-uservice-to-sovd/
-│   └── commercial-sdv-stack/
-│       uservices/powertrain/
-│
-├── 06-sovd-openbsw/
-│   └── OpenBSW-Playground/
-│       OpenBSW-SOVD-Demo/
-│
-├── 07-hpc-signals/
-│   └── e2e-vehicle-signals/
-│
-├── 08-vehicle-app/
-│   └── companion-application/
-│
-├── 09-transport-portability/
-│   └── fleet-management/
-│
-└── 10-software-orchestration/
-    └── software-orchestration/
-```
+You should not have to search the whole SDV ecosystem. The two tables in this
+document ([overview](#-building-block-overview) and the quick guide below) are
+the curated map; every link points at the specific directory or file to read.
+When a blueprint has many components, open only the one named in the table.
 
 ---
 
@@ -1061,8 +1043,3 @@ But the Guardian Loop should keep running.
 That is the Software-Defined Vehicle idea this challenge is meant to demonstrate.
 
 > **Where we're going, we don't need cables.**
-
-```
-
-I’d use this as a separate **`BUILDING_BLOCKS.md`** next to the main challenge `README.md`. The README explains the mission and staged challenge; this document answers the participant’s practical question: **“Which existing project should I copy from to implement this part?”** 
-```

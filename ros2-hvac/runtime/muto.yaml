@@ -1,17 +1,29 @@
+# Shared parameters for every Eclipse Muto node (see muto.launch.py).
+#
+# Muto nodes talk to each other over ROS 2 topics named <prefix>/<topic>, so
+# the defaults below produce e.g. /muto/stack and /muto/twin. The vehicle
+# identity (namespace + name) is overridden by launch arguments from
+# start-hvac-stack.sh; the values here are the fallback.
 /**:
   ros__parameters:
     prefix: muto
     namespace: org.eclipse.muto.guardian
     name: guardian-hvac
+    # Stack requests (what deploy_stack.py publishes to).
     stack_topic: "stack"
+    # Digital-twin state of the currently deployed stack.
     twin_topic: "twin"
+    # Agent <-> MQTT gateway plumbing (cloud path, unused offline).
     agent_to_gateway_topic: "agent_to_gateway"
     gateway_to_agent_topic: "gateway_to_agent"
+    # Agent <-> command plugin plumbing.
     agent_to_commands_topic: "agent_to_command"
     commands_to_agent_topic: "command_to_agent"
     thing_messages_topic: "thing_messages"
     ignored_packages: []
 
+# Composer plugins accept a list of packages to skip when building a stack.
+# An empty-string entry means "skip nothing".
 /muto/compose_plugin:
   ros__parameters:
     ignored_packages:

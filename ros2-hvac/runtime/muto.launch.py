@@ -1,129 +1,82 @@
+"""Launch file for the Eclipse Muto runtime inside the ros2-hvac container.
+
+Muto is split into three upstream repositories, each of which contributes ROS 2
+nodes that are started here under the ``muto`` namespace:
+
+``muto_agent`` (https://github.com/eclipse-muto/agent)
+    * ``agent``           entry point; receives stack/twin/command requests and
+                          dispatches them to the composer
+    * ``gateway``         MQTT bridge to a cloud backend (Eclipse Ditto/Hono).
+                          Unused in this offline demo but part of the standard
+                          Muto deployment, so it is kept for fidelity.
+    * ``commands_plugin`` executes remote commands (e.g. ``ros2 topic list``)
+
+``muto_core`` (https://github.com/eclipse-muto/core)
+    * ``core_twin``       digital-twin cache of the vehicle's current stack
+
+``muto_composer`` (https://github.com/eclipse-muto/composer)
+    * ``muto_composer``   orchestrates the plugins below for each stack request
+    * ``provision_plugin``downloads/verifies stack artifacts
+    * ``compose_plugin``  builds the workspace (``colcon build``)
+    * ``launch_plugin``   starts/stops the stack's launch file or script
+
+All nodes share the parameters in ``muto.yaml`` plus the vehicle identity
+passed as launch arguments by ``start-hvac-stack.sh``.
+"""
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+MUTO_PARAMS = "/opt/muto_runtime/muto.yaml"
 
-def generate_launch_description():
-    muto_namespace_arg = DeclareLaunchArgument("muto_namespace", default_value="muto")
-    vehicle_namespace_arg = DeclareLaunchArgument(
-        "vehicle_namespace",
-        default_value="org.eclipse.muto.guardian",
-        description="Vehicle ID namespace",
-    )
-    vehicle_name_arg = DeclareLaunchArgument(
-        "vehicle_name",
-        default_value="guardian-hvac",
-        description="Vehicle name",
-    )
 
-    muto_params = "/opt/muto_runtime/muto.yaml"
-
-    node_agent = Node(
+def _muto_node(package: str, executable: str, name: str, extra_parameters=()) -> Node:
+    """Create one Muto node under the ``muto`` namespace with the shared parameters."""
+    return Node(
         namespace=LaunchConfiguration("muto_namespace"),
-        name="agent",
-        package="muto_agent",
-        executable="muto_agent",
+        name=name,
+        package=package,
+        executable=executable,
         output="screen",
         parameters=[
-            muto_params,
+            MUTO_PARAMS,
             {"namespace": LaunchConfiguration("vehicle_namespace")},
             {"name": LaunchConfiguration("vehicle_name")},
+            *extra_parameters,
         ],
     )
 
-    node_mqtt_gateway = Node(
-        namespace=LaunchConfiguration("muto_namespace"),
-        name="gateway",
-        package="muto_agent",
-        executable="mqtt",
-        output="screen",
-        parameters=[
-            muto_params,
-            {"namespace": LaunchConfiguration("vehicle_namespace")},
-            {"name": LaunchConfiguration("vehicle_name")},
-        ],
-    )
 
-    node_commands = Node(
-        namespace=LaunchConfiguration("muto_namespace"),
-        name="commands_plugin",
-        package="muto_agent",
-        executable="commands",
-        output="screen",
-        parameters=[
-            muto_params,
-            {"namespace": LaunchConfiguration("vehicle_namespace")},
-            {"name": LaunchConfiguration("vehicle_name")},
-        ],
-    )
-
-    node_twin = Node(
-        namespace=LaunchConfiguration("muto_namespace"),
-        name="core_twin",
-        package="muto_core",
-        executable="twin",
-        output="screen",
-        parameters=[
-            muto_params,
-            {"namespace": LaunchConfiguration("vehicle_namespace")},
-            {"name": LaunchConfiguration("vehicle_name")},
-        ],
-    )
-
-    composer_parameters = [
-        muto_params,
-        {"namespace": LaunchConfiguration("vehicle_namespace")},
-        {"name": LaunchConfiguration("vehicle_name")},
-        {"ignored_packages": [""]},
+def generate_launch_description() -> LaunchDescription:
+    arguments = [
+        DeclareLaunchArgument("muto_namespace", default_value="muto"),
+        DeclareLaunchArgument(
+            "vehicle_namespace",
+            default_value="org.eclipse.muto.guardian",
+            description="Vehicle ID namespace (Ditto thing namespace)",
+        ),
+        DeclareLaunchArgument(
+            "vehicle_name",
+            default_value="guardian-hvac",
+            description="Vehicle name (Ditto thing name)",
+        ),
     ]
 
-    node_composer = Node(
-        namespace=LaunchConfiguration("muto_namespace"),
-        name="muto_composer",
-        package="muto_composer",
-        executable="muto_composer",
-        output="screen",
-        parameters=composer_parameters,
-    )
+    # The composer nodes accept an ignored_packages list; an empty string
+    # entry means "ignore nothing" and avoids an empty-array parameter.
+    composer_extra = [{"ignored_packages": [""]}]
 
-    node_compose_plugin = Node(
-        namespace=LaunchConfiguration("muto_namespace"),
-        name="compose_plugin",
-        package="muto_composer",
-        executable="compose_plugin",
-        output="screen",
-        parameters=composer_parameters,
-    )
+    nodes = [
+        _muto_node("muto_agent", "muto_agent", "agent"),
+        _muto_node("muto_agent", "mqtt", "gateway"),
+        _muto_node("muto_agent", "commands", "commands_plugin"),
+        _muto_node("muto_core", "twin", "core_twin"),
+        _muto_node("muto_composer", "muto_composer", "muto_composer", composer_extra),
+        _muto_node("muto_composer", "compose_plugin", "compose_plugin", composer_extra),
+        _muto_node("muto_composer", "provision_plugin", "provision_plugin", composer_extra),
+        _muto_node("muto_composer", "launch_plugin", "launch_plugin", composer_extra),
+    ]
 
-    node_provision_plugin = Node(
-        namespace=LaunchConfiguration("muto_namespace"),
-        name="provision_plugin",
-        package="muto_composer",
-        executable="provision_plugin",
-        output="screen",
-        parameters=composer_parameters,
-    )
-
-    node_launch_plugin = Node(
-        namespace=LaunchConfiguration("muto_namespace"),
-        name="launch_plugin",
-        package="muto_composer",
-        executable="launch_plugin",
-        output="screen",
-        parameters=composer_parameters,
-    )
-
-    ld = LaunchDescription()
-    ld.add_action(muto_namespace_arg)
-    ld.add_action(vehicle_namespace_arg)
-    ld.add_action(vehicle_name_arg)
-    ld.add_action(node_agent)
-    ld.add_action(node_mqtt_gateway)
-    ld.add_action(node_commands)
-    ld.add_action(node_twin)
-    ld.add_action(node_composer)
-    ld.add_action(node_compose_plugin)
-    ld.add_action(node_provision_plugin)
-    ld.add_action(node_launch_plugin)
-    return ld
+    return LaunchDescription(arguments + nodes)

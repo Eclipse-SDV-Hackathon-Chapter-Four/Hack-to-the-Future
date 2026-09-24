@@ -1,3 +1,45 @@
+//! `ros2_hvac_bridge`: connects the ROS 2 HVAC simulator to the rest of the
+//! Guardian stack, which speaks Eclipse uProtocol over Eclipse Zenoh.
+//!
+//! It runs inside the `ros2-hvac` container next to the simulator (started
+//! last by `ros2-hvac/start-hvac-stack.sh`) and has three jobs:
+//!
+//! 1. **Commands in.** Subscribe to HVAC commands (`uds/hvac/cmd`, published
+//!    by the CDA simulator on behalf of the Guardian) and apply them to the
+//!    simulator by writing its ROS 2 parameters.
+//! 2. **State out.** Publish the HVAC state as uProtocol events (VSS setpoint,
+//!    VSS "AC active", and a combined `hvac/state` event) for the Guardian,
+//!    the temperature simulator and the dashboard.
+//! 3. **Fault console.** Serve a small web page + JSON API on `PORT` (8093,
+//!    host 18081) to inspect the state and inject/clear an HVAC fault.
+//!
+//! ## Source of truth
+//!
+//! The ROS 2 parameters on `/hvac_simulator` are the single source of truth.
+//! They can change underneath this process at any time: through the CAN
+//! bridge inside the simulator, through `ros2 param set`, or through this
+//! bridge. Therefore the bridge never pushes its own cached state wholesale;
+//! each writer touches only the fields it owns (commands: temperature / AC /
+//! fan; fault console: `fault_active`), and a read-back loop polls the
+//! parameters every two seconds and republishes the Zenoh events when they
+//! changed externally. `write_generation` guards the race between a local
+//! write and a concurrent read-back.
+//!
+//! ## Why shell out to `ros2`?
+//!
+//! Parameters are read and written by spawning the `ros2 param` CLI. That
+//! keeps the bridge free of a Rust ROS 2 client dependency at the cost of a
+//! few hundred milliseconds per call, which is fine at this update rate and
+//! easy for hackathon teams to reason about.
+//!
+//! ## Environment
+//!
+//! * `HOST` / `PORT`            fault console bind address (default 0.0.0.0:8093)
+//! * `ZENOH_CONNECT`            Zenoh router endpoint (read by `guardian_sil`)
+//! * `ROS2_HVAC_NODE_NAME`      simulator node name hint (default `/hvac_simulator`)
+//! * `RUST_LOG`                 tracing filter
+
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -19,6 +61,8 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 use up_rust::{UListener, UMessage, UTransport};
 
+/// Point-in-time view of the HVAC state as served by `/api/state` and used
+/// to build the outgoing uProtocol events.
 #[derive(Debug, Clone, Serialize)]
 struct HvacControllerSnapshot {
     target_temperature_celsius: i8,
@@ -30,6 +74,9 @@ struct HvacControllerSnapshot {
     timestamp_ms: u64,
 }
 
+/// Bridge-side cache of the simulator's parameters. Kept only so the fault
+/// console and the read-back loop can detect changes; the ROS 2 parameters
+/// remain authoritative.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HvacControllerState {
     target_temperature_celsius: i8,
@@ -52,6 +99,9 @@ impl Default for HvacControllerState {
 }
 
 impl HvacControllerState {
+    /// A faulted HVAC cannot cool: the effective state masks the request.
+    /// This is what the Guardian sees and what makes it escalate to window
+    /// mitigation when a fault is injected.
     fn effective_air_conditioning_active(&self) -> bool {
         self.requested_air_conditioning_active && !self.fault_active
     }
@@ -69,18 +119,35 @@ impl HvacControllerState {
     }
 }
 
+/// Shared state handed to the axum handlers, the uProtocol listener and the
+/// read-back loop.
 #[derive(Clone)]
 struct AppState {
     hvac_state: Arc<Mutex<HvacControllerState>>,
     transport: Arc<dyn UTransport>,
     ros2_node_name: String,
+    // Bumped on every locally-initiated write (command / fault toggle) so the
+    // read-back loop can discard a stale parameter dump that raced with it.
+    write_generation: Arc<AtomicU64>,
 }
 
+// The ROS 2 parameters on /hvac_simulator are the single source of truth for
+// HVAC state; they can change underneath us via the CAN bridge or ros2 CLI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RosHvacParameters {
+    target_temperature_celsius: i8,
+    air_conditioning_active: bool,
+    fan_speed_percent: u8,
+    fault_active: bool,
+}
+
+/// Body of `POST /api/fault`.
 #[derive(Debug, Deserialize)]
 struct FaultToggleRequest {
     fault_active: bool,
 }
 
+/// uProtocol listener for `uds/hvac/cmd` (`HvacCommand` JSON payloads).
 struct HvacCommandListener {
     app: AppState,
 }
@@ -90,6 +157,7 @@ impl UListener for HvacCommandListener {
     async fn on_receive(&self, message: UMessage) {
         match decode_json_payload::<HvacCommand>(&message) {
             Ok(cmd) => {
+                self.app.write_generation.fetch_add(1, Ordering::SeqCst);
                 let snapshot = {
                     let mut guard = self.app.hvac_state.lock().await;
                     guard.target_temperature_celsius = cmd.target_temperature_celsius;
@@ -99,7 +167,10 @@ impl UListener for HvacCommandListener {
                     guard.snapshot()
                 };
 
-                if let Err(err) = sync_ros2_hvac_parameters(&self.app.ros2_node_name, &snapshot).await {
+                // Write only the fields this command carries; fault_active is
+                // owned by other sources (CAN, fault console) and must not be
+                // clobbered here.
+                if let Err(err) = sync_command_parameters(&self.app.ros2_node_name, &snapshot).await {
                     warn!("failed to sync ROS2 HVAC parameters after command: {}", err);
                 }
 
@@ -141,6 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         transport: transport.clone(),
         ros2_node_name: std::env::var("ROS2_HVAC_NODE_NAME")
             .unwrap_or_else(|_| "/hvac_simulator".to_string()),
+        write_generation: Arc::new(AtomicU64::new(0)),
     };
 
     transport
@@ -154,33 +226,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let initial_snapshot = app_state.hvac_state.lock().await.snapshot();
-    if let Err(err) = sync_ros2_hvac_parameters(&app_state.ros2_node_name, &initial_snapshot).await {
-        warn!("failed to sync initial ROS2 HVAC parameters: {}", err);
-    }
     publish_hvac_state(&transport, &initial_snapshot).await?;
 
-    let sync_state = app_state.hvac_state.clone();
-    let sync_node_name = app_state.ros2_node_name.clone();
+    // Read-back loop: the ROS 2 parameters are the source of truth. Pull them
+    // periodically so state set via CAN (or ros2 CLI) is reflected in
+    // /api/state, the fault console, and the Zenoh state events.
+    let sync_app = app_state.clone();
+    let sync_transport = transport.clone();
     tokio::spawn(async move {
-        let mut last_synced: Option<(i8, bool, u8, bool)> = None;
-
+        let mut reported_read_failure = false;
         loop {
-            let snapshot = {
-                let guard = sync_state.lock().await;
-                guard.snapshot()
-            };
-
-            let fingerprint = (
-                snapshot.target_temperature_celsius,
-                snapshot.effective_air_conditioning_active,
-                snapshot.fan_speed_percent,
-                snapshot.fault_active,
-            );
-
-            if last_synced != Some(fingerprint) {
-                match sync_ros2_hvac_parameters(&sync_node_name, &snapshot).await {
-                    Ok(()) => last_synced = Some(fingerprint),
-                    Err(err) => warn!("failed to sync ROS2 HVAC parameters in retry loop: {}", err),
+            let generation_before = sync_app.write_generation.load(Ordering::SeqCst);
+            match read_ros2_hvac_parameters(&sync_app.ros2_node_name).await {
+                Ok(params) => {
+                    reported_read_failure = false;
+                    if sync_app.write_generation.load(Ordering::SeqCst) != generation_before {
+                        // A local command raced with this dump; its values may
+                        // be stale. Skip and re-read next cycle.
+                        continue;
+                    }
+                    let (changed, snapshot) = {
+                        let mut guard = sync_app.hvac_state.lock().await;
+                        let changed = guard.target_temperature_celsius
+                            != params.target_temperature_celsius
+                            || guard.requested_air_conditioning_active
+                                != params.air_conditioning_active
+                            || guard.fan_speed_percent != params.fan_speed_percent
+                            || guard.fault_active != params.fault_active;
+                        guard.target_temperature_celsius = params.target_temperature_celsius;
+                        guard.requested_air_conditioning_active = params.air_conditioning_active;
+                        guard.fan_speed_percent = params.fan_speed_percent;
+                        guard.fault_active = params.fault_active;
+                        (changed, guard.snapshot())
+                    };
+                    if changed {
+                        info!(
+                            "ROS2 HVAC parameters changed externally: target={}C active={} fan={} fault={}; republishing state",
+                            snapshot.target_temperature_celsius,
+                            snapshot.effective_air_conditioning_active,
+                            snapshot.fan_speed_percent,
+                            snapshot.fault_active
+                        );
+                        if let Err(err) = publish_hvac_state(&sync_transport, &snapshot).await {
+                            warn!("failed to publish HVAC state after read-back: {}", err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    if !reported_read_failure {
+                        warn!("failed to read ROS2 HVAC parameters (will keep retrying): {}", err);
+                        reported_read_failure = true;
+                    }
                 }
             }
 
@@ -203,30 +299,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `GET /` — the fault console page (embedded HTML below).
 async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
 
+/// `GET /health` — liveness probe.
 async fn health() -> StatusCode {
     StatusCode::OK
 }
 
+/// `GET /api/state` — current snapshot (also polled by the Guardian dashboard).
 async fn get_state(State(app): State<AppState>) -> Json<HvacControllerSnapshot> {
     let guard = app.hvac_state.lock().await;
     Json(guard.snapshot())
 }
 
+/// `POST /api/fault {"fault_active": bool}` — inject or clear the simulated
+/// HVAC fault. Writes only `fault_active` on the simulator.
 async fn set_fault(
     State(app): State<AppState>,
     Json(payload): Json<FaultToggleRequest>,
 ) -> Result<Json<HvacControllerSnapshot>, StatusCode> {
+    app.write_generation.fetch_add(1, Ordering::SeqCst);
     let snapshot = {
         let mut guard = app.hvac_state.lock().await;
         guard.fault_active = payload.fault_active;
         guard.snapshot()
     };
 
-    if let Err(err) = sync_ros2_hvac_parameters(&app.ros2_node_name, &snapshot).await {
+    // Write only fault_active; the other parameters may have been set via CAN
+    // and must not be reset from our (possibly stale) local state.
+    if let Err(err) = sync_fault_parameter(&app.ros2_node_name, snapshot.fault_active).await {
         warn!("failed to sync ROS2 HVAC parameters after fault toggle: {}", err);
     }
 
@@ -237,6 +341,10 @@ async fn set_fault(
     Ok(Json(snapshot))
 }
 
+/// Publish the three outgoing uProtocol events for one snapshot:
+/// VSS `Vehicle.Cabin.HVAC.Station.Row1.Left.Temperature`,
+/// VSS `Vehicle.Cabin.HVAC.IsAirConditioningActive`, and the combined
+/// `hvac/state` event consumed by the Guardian, temperature-sim and dashboard.
 async fn publish_hvac_state(
     transport: &Arc<dyn UTransport>,
     snapshot: &HvacControllerSnapshot,
@@ -282,7 +390,10 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn sync_ros2_hvac_parameters(
+/// Write the command-owned parameters (temperature, AC, fan) to the simulator.
+/// Note that the *effective* AC state is written, so a faulted HVAC reports
+/// AC off on the ROS 2 side as well.
+async fn sync_command_parameters(
     node_name_hint: &str,
     snapshot: &HvacControllerSnapshot,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -309,15 +420,77 @@ async fn sync_ros2_hvac_parameters(
         &snapshot.fan_speed_percent.to_string(),
     )
     .await?;
-    run_ros2_param_set(
-        &node_name,
-        "fault_active",
-        if snapshot.fault_active { "true" } else { "false" },
-    )
-    .await?;
     Ok(())
 }
 
+/// Write only `fault_active` to the simulator.
+async fn sync_fault_parameter(
+    node_name_hint: &str,
+    fault_active: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let node_name = resolve_ros2_node_name(node_name_hint).await?;
+    run_ros2_param_set(
+        &node_name,
+        "fault_active",
+        if fault_active { "true" } else { "false" },
+    )
+    .await
+}
+
+/// Read the four HVAC parameters back from the simulator via
+/// `ros2 param dump`, parsing its flat `key: value` YAML output.
+async fn read_ros2_hvac_parameters(
+    node_name_hint: &str,
+) -> Result<RosHvacParameters, Box<dyn std::error::Error + Send + Sync>> {
+    let node_name = resolve_ros2_node_name(node_name_hint).await?;
+    let output = Command::new("ros2")
+        .args(["param", "dump", &node_name])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("ros2 param dump {} failed: {}", node_name, stderr).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut target: Option<i8> = None;
+    let mut active: Option<bool> = None;
+    let mut fan: Option<u8> = None;
+    let mut fault: Option<bool> = None;
+
+    for line in stdout.lines() {
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim() {
+            "target_temperature_celsius" => target = value.parse().ok(),
+            "air_conditioning_active" => active = value.parse().ok(),
+            "fan_speed_percent" => fan = value.parse().ok(),
+            "fault_active" => fault = value.parse().ok(),
+            _ => {}
+        }
+    }
+
+    match (target, active, fan, fault) {
+        (Some(target_temperature_celsius), Some(air_conditioning_active), Some(fan_speed_percent), Some(fault_active)) => {
+            Ok(RosHvacParameters {
+                target_temperature_celsius,
+                air_conditioning_active,
+                fan_speed_percent,
+                fault_active,
+            })
+        }
+        _ => Err(format!(
+            "ros2 param dump {} missing expected HVAC parameters (got target={:?} active={:?} fan={:?} fault={:?})",
+            node_name, target, active, fan, fault
+        )
+        .into()),
+    }
+}
+
+/// `ros2 param set <node> <param> <value>`, surfacing stdout/stderr on failure.
 async fn run_ros2_param_set(
     node_name: &str,
     param_name: &str,
@@ -342,6 +515,8 @@ async fn run_ros2_param_set(
     .into())
 }
 
+/// Find the simulator node: exact match on the hint first, otherwise the
+/// first node whose name ends with it (tolerates a namespace prefix).
 async fn resolve_ros2_node_name(
     node_name_hint: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -367,6 +542,8 @@ async fn resolve_ros2_node_name(
     Err(format!("node not found from hint {}. visible nodes: {}", node_name_hint, nodes.join(", ")).into())
 }
 
+/// The fault console page. Polls `/api/state` every 1.5 s and posts to
+/// `/api/fault`; kept inline so the bridge is a single self-contained binary.
 const INDEX_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <head>

@@ -36,6 +36,7 @@ Vagrant.configure("2") do |config|
     # https://opendut.eclipse.dev/book/user-manual/edgar/docker.html#can
 
     apt-get install -y linux-modules-extra-$(uname -r)  # vcan kernel module
+    apt-get install -y can-utils  # candump, cansend, cangen
 
     echo "options can_gw max_hops=2" > /etc/modprobe.d/can.conf
     modprobe vcan

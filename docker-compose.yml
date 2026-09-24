@@ -141,26 +141,39 @@ services:
   # temperature-sim remains the cabin temperature source and consumes HVAC state
   # from this workload. Disable temperature-sim only when using the ThreadX
   # SOME/IP temperature path instead.
+  # One container, four processes (see ros2-hvac/README.md for the map):
+  #   Eclipse Muto runtime -> deploys the HVAC simulator from artifact-server
+  #   ros2_medkit gateway  -> REST diagnostics            host port 18080
+  #   ros2_hvac_bridge     -> uProtocol/Zenoh <-> ROS 2, fault console 18081
   ros2-hvac:
     build:
       context: .
       dockerfile: ros2-hvac/Dockerfile
     image: hack-to-the-future/ros2-hvac:stage-ros2
     environment:
+      # Rust bridge (ros2_hvac_bridge)
       HOST: 0.0.0.0
       PORT: 8093
       RUST_LOG: info
       ZENOH_CONNECT: tcp/zenohd:7447
+      # ROS 2 / Eclipse Muto bootstrap (start-hvac-stack.sh)
       ROS_DOMAIN_ID: "0"
       MUTO_BOOTSTRAP_DELAY_S: "8"
       MUTO_DEPLOY_DISCOVERY_WAIT_S: "3"
-      MEDKIT_BASE_URL: http://127.0.0.1:8080/api/v1/
-      MEDKIT_HVAC_APP_ID: hvac_simulator
-      MEDKIT_TARGET_TEMPERATURE_PARAM: target_temperature_celsius
-      MEDKIT_AC_ACTIVE_PARAM: air_conditioning_active
-      MEDKIT_FAN_SPEED_PARAM: fan_speed_percent
-      MEDKIT_FAULT_PARAM: fault_active
-      HVAC_BRIDGE_SYNC_INTERVAL_MS: "1000"
+      # CAN bridge inside the HVAC simulator (forwarded via hvac.launch.py).
+      # Default CAN transport is python-can's udp_multicast: a pure userspace
+      # bus over UDP inside the container network. Works identically on
+      # macOS/Windows/Linux hosts (SocketCAN/vcan is Linux-kernel-only and is
+      # provided by the ros2-hvac-host-can profile instead).
+      CAN_ENABLED: "true"
+      CAN_BUSTYPE: udp_multicast
+      CAN_CHANNEL: 239.74.163.2
+      CAN_TX_PERIOD_S: "1.0"
+      CAN_RX_POLL_PERIOD_S: "0.05"
+      CAN_RETRY_PERIOD_S: "5.0"
+      CAN_TX_ID: "0x320"
+      CAN_RX_ID: "0x321"
+      CAN_BRINGUP_VCAN: "false"
     ports:
       - "18080:8080"
       - "18081:8093"
@@ -170,6 +183,46 @@ services:
       - zenohd
     profiles:
       - ros2
+      - ros2-host-can
+
+  # Linux-only variant: real SocketCAN against a host-managed vcan0/can0.
+  # Requires a Linux host (or Linux VM); see ros2-hvac/CAN_INTEGRATION.md.
+  ros2-hvac-host-can:
+    extends:
+      service: ros2-hvac
+    profiles:
+      - ros2-host-can
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      ZENOH_CONNECT: tcp/127.0.0.1:7447
+      CAN_ENABLED: "true"
+      CAN_BUSTYPE: socketcan
+      CAN_CHANNEL: vcan0
+      # Set to "true" to let the container create vcan0 itself (needs NET_ADMIN).
+      CAN_BRINGUP_VCAN: "false"
+    ports: []
+    depends_on: []
+
+  # cansend/candump equivalents for the containerized udp_multicast CAN bus.
+  # Works on any host OS (macOS/Windows/Linux). On-demand usage:
+  #   podman-compose --profile can-tools -f docker-compose.yml run --rm can-tools send 321#160A01
+  #   podman-compose --profile can-tools -f docker-compose.yml run --rm can-tools dump
+  can-tools:
+    build:
+      context: ros2-hvac
+      dockerfile: can-tools/Dockerfile
+    image: hack-to-the-future/can-tools:stage-ros2
+    environment:
+      CAN_BUSTYPE: udp_multicast
+      CAN_CHANNEL: 239.74.163.2
+    # Shares the default compose network with ros2-hvac; UDP multicast only
+    # reaches containers on the same bridge network.
+    profiles:
+      - can-tools
+    command: ["dump"]
 
   medkit-web-ui:
     image: ghcr.io/selfpatch/ros2_medkit_web_ui:latest
